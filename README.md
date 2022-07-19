@@ -16,8 +16,6 @@ Tweets are mined directly from Twitter using Twitter API access. Everytime the s
 Tweets are cleaned, irrelevant/stop words as well as unwanted encodings are removed. Date/time variables are revised regularly and monitored closely.
 
 #### 3. Tweet Exploration
-
-a. Word/Document Frequency
 - Barchart: Top n most common words
 - Wordcloud: Most common words, freq reflected by size
 - tf-idf: find the important words for the content of each document by decreasing the weight for commonly used words; increasing the weight for words that are not used very much in a collection or corpus of documents
