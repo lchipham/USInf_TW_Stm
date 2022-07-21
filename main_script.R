@@ -20,6 +20,7 @@ library(ggpubr)
 # Quantitative Finance
 library(quantmod)
 library(qrmdata)
+library(yfR)
 
 #==============================================================================#
 
@@ -34,19 +35,25 @@ twitter_token <- create_token(
   set_renv = TRUE)
 
 # Tweets of Major News Articles
-news_articles <- get_timelines(c("WSJ", "TheEconomist", "nytimes", "FinancialTimes", "CNBC", "business"), 
-                        n = 200000, 
+news_articles_2 <- get_timelines(c("WSJ", "TheEconomist", "nytimes", "FinancialTimes", "CNBC", "business",
+                                 "ABC", "CBSNews", "CNN", "FoxNews", "MSNBC", "NBC News", "USATODAY",
+                                 "washingtonpost", "politico", "VICENews", "HuffPost", "CNETNews", "nprpolitics",
+                                 "Newsweek", "NewYorker", "TIME", "USRealityCheck", "YahooFinance", "MarketWatch",
+                                 "Forbes", "latimes", "Reuters"), 
                         language = 'en',
-                        since = '2022-01-01', 
-                        until = '2022-07-19')
-nrow(news_articles)
-summary(news_articles$created_at)
-articles_df <- as.data.frame(news_articles)
-saveRDS(articles_df, "news_articles.rds")
+                        n = 200000,
+                        since = '2021-11-01', 
+                        until = '2022-07-21',
+                        retryonratelimit = TRUE)
 
-# Tweets about 'inflation' & 'recession' -- general public
-inflation_tweets <- search_tweets("inflation", n = 20000, type = "recent", include_rts = FALSE, retryonratelimit = TRUE, lang = "en")
-recession_tweets <- search_tweets("recession", n = 15000, type = "recent", include_rts = FALSE, lang = "en")
+nrow(news_articles_2)
+summary(news_articles_2$created_at)
+articles_df_2 <- as.data.frame(news_articles_2)
+saveRDS(articles_df_2, "news_articles_2.rds")
+
+# Tweets about 'inflation' & 'recession' -- general public (retryonratelimit = TRUE)
+inflation_tweets <- search_tweets("inflation", n = 15000, type = "recent", include_rts = FALSE, lang = "en")
+recession_tweets <- search_tweets("recession", n = 26000, type = "recent", include_rts = FALSE, lang = "en")
 inflation_df <- as.data.frame(inflation_tweets)
 recession_df <- as.data.frame(recession_tweets)
 saveRDS(inflation_df, "inflation_tweets.rds")
@@ -59,6 +66,7 @@ t5yr <- getSymbols(Symbols = "DGS5", src = "FRED", auto.assign = FALSE)
 t2yr <- getSymbols(Symbols = "DGS2", src = "FRED", auto.assign = FALSE)
 treasury_yields <- merge(t2yr, t5yr, t10yr, all = FALSE)
 View(treasury_yields)
+View(t2yr)
 
 # Convert rownames to column (Date)
 treasury_yields <- as.data.frame(treasury_yields)
@@ -67,11 +75,27 @@ treasury_yields$Date <- as.Date(treasury_yields$Date, format = "%Y-%m-%d")
 str(treasury_yields)  
 summary(treasury_yields$Date)
 
-# Filter dates from 2022-05-16 to 2022-07-18
-tyields_subset <- treasury_yields %>% 
-  filter(Date >= "2022-05-17")
-summary(tyields_subset$Date)
+#saveRDS(treasury_yields, "treasury_yields.rds")
 
+# Stock Index
+sp500_full <- getSymbols(Symbols = "SPY", auto.assign = FALSE)
+
+View(sp500_full)
+
+# Source tutorial: https://www.r-bloggers.com/2022/03/new-r-package-yfr/
+
+my_ticker <- 'SPY'
+#first_date <- '2022-05-17'
+#last_date <- "2022-07-18"
+sp500 <- yf_get(tickers = my_ticker, 
+                first_date = '2007-01-03',
+                last_date = '2022-07-20')
+View(sp500)
+class(sp500)
+str(sp500)
+sp500_ts <- xts(sp500[,-c(1,2)], order.by = as.POSIXct(sp500$ref_date))
+#sp500_ts <- sp500_ts[-1,]
+View(sp500_ts)
 #==============================================================================#
 
 # SECTION II: DATA PRE-PROCESSING -----------------------------------------
@@ -101,33 +125,33 @@ tidy_recession <- recession_clean %>%
 
 #------------------------------------------------------------------------------#
 # News Article Data
-news <- readRDS("news_articles.rds")
-news_clean <- news %>% 
+news2 <- readRDS("news_articles_2.rds")
+news2_clean <- news2 %>% 
   mutate(text = str_replace_all(text, "&#x27;|&quot;|&#x2F;", "'"), ## weird encoding
          text = str_replace_all(text, "<a(.*?)>", " "),             ## links 
          text = str_replace_all(text, "&gt;|&lt;|&amp;", " "),      ## html yuck
          text = str_replace_all(text, "&#[:digit:]+;", " "),        ## html yuck
          text = str_remove_all(text, "<[^>]*>"),                    ## more html yuck
          postID = row_number())
-View(news_clean)
+#View(news_clean)
 
 # Custom stop words
-data("stop_words")
+#data("stop_words")
 custom_stops <- bind_rows(tibble(word = c("heres","@cnbcmakeit", "writes", "people"),
                                  lexicon = c("CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM")),
                           stop_words)
 
-tidy_news <- news_clean %>% 
+tidy_news2 <- news2_clean %>% 
   unnest_tokens(word, text, token = "tweets") %>% 
-  anti_join(custom_stops) %>%
+  anti_join(stop_words) %>%
   filter(!str_detect(word, "[0-9]+")) %>%
   add_count(word)
-View(tidy_news)
+#View(tidy_news)
 
 # Rename news articles
-unique(tidy_news$screen_name)
-tidy_news$screen_name <- as.factor(tidy_news$screen_name)
-tidy_news$screen_name <- recode_factor(tidy_news$screen_name,
+unique(tidy_news2$screen_name)
+tidy_news2$screen_name <- as.factor(tidy_news2$screen_name)
+tidy_news2$screen_name <- recode_factor(tidy_news2$screen_name,
                                              "business" = "Bloomberg",
                                              "WSJ" = "Wall Street Journal",
                                              "FinancialTimes" = "Financial Times",
@@ -135,16 +159,16 @@ tidy_news$screen_name <- recode_factor(tidy_news$screen_name,
                                              "nytimes" = "New York Times")
 
 # TREEMAP (highcharter): Topic Rank (news)
-rank_news_words <- tidy_news %>% 
+rank_news_words <- tidy_news2 %>% 
   count(word, sort = TRUE) %>% 
-  filter(n > 380)
+  filter(n > 1800)
 View(rank_news_words)
 
 rank_news_words %>% 
   hchart('treemap', hcaes(x = 'word', value = 'n', color = 'n')) %>% 
   hc_colorAxis(stops = color_stops(colors = viridis::inferno(10))) %>% 
   hc_title(text = "Most Frequent Words in News Articles Tweets") %>% 
-  hc_subtitle(text = "May - July 2022") %>% 
+  hc_subtitle(text = "March - July 2022") %>% 
   hc_credits(enabled = TRUE, text = "@lchi.pham") %>% 
   hc_caption(text = "Source Tweets: WSJ, Financial Times, New York Times, Bloomberg, CNBC, The Economist")
   
@@ -155,7 +179,7 @@ rank_news_words %>%
 # a. Most common words
 rank_recession_words <- tidy_recession %>% 
   count(word, sort = TRUE) 
-View(rank_recession_words)
+#View(rank_recession_words)
 top_15_most_common <- rank_recession_words %>% 
   mutate(word2 = fct_reorder(word, n)) %>%
   top_n(15) %>% 
@@ -165,6 +189,53 @@ top_15_most_common <- rank_recession_words %>%
   theme_bw()
 top_15_most_common  
 
+rec_n_99_pct <- quantile(rank_recession_words$n, probs = 0.99)
+
+#plotLines = list(list(value = 100, color = "pink", width = 2)),
+
+#Function to create theme for each graph
+
+# twitter background: https://media.giphy.com/media/10zI52A8mrfwNG/giphy.gif
+
+# social media background: https://media.giphy.com/media/eBb2W1OYVHou9l6W7N/giphy.gif
+
+# wsj: https://images.wsj.net/im-571374?width=10&height=5
+
+# twitter bird: https://thumbs.gfycat.com/ZestyMedicalAtlanticblackgoby-max-1mb.gif
+
+make_me_pretty <- function(list) {
+  hc_theme_merge(
+    hc_theme_tufte(),
+    hc_theme(
+      colors = list,
+      chart = list(backgroundColor = "white",
+                   divBackgroundImage = "https://media.istockphoto.com/photos/unrecognizable-silhouettes-of-people-walking-on-a-street-picture-id919886016?k=20&m=919886016&s=612x612&w=0&h=Z0P8FRrnqmZpdVgbU_aCHbxvaSz_roxjrKh65LOXhBU="),
+      title = list(style = list(color = "black", fontFamily = "Exchange", fontWeight = 'bold')),
+      subtitle = list(style = list(color = "black", fontFamily = "Exchange")),
+      legend = list(itemStyle = list(fontFamily = "Exchange", color = "black"),
+                    itemHoverStyle = list(color = "gray"))
+    )
+  )
+}
+
+#Theme of industry graph
+custom_theme <- make_me_pretty(list = c('#fb9a99', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69', '#fccde5', '#d9d9d9', '#d6604d', '#ccebc5', '#ffed6f','#8dd3c7'))
+
+
+# plotLines = list(list(value = 100, color = "brown", width = 2))
+rank_recession_words %>% 
+  mutate(word2 = fct_reorder(word, n)) %>%
+  top_n(15) %>% 
+  hchart(type = "bar", hcaes(x = word2, y = n), color = "skyblue", borderColor = "black") %>% 
+  hc_yAxis(title = list(text = "Word Count",
+                        style = list(color = "black", fontFamily = "Exchange", fontWeight = 'bold')),
+           labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+  hc_xAxis(title = list(text = ""),
+           labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+  hc_title(text = "Most Frequent Words in 'Recession' Tweets") %>% 
+  hc_subtitle(text = "July 2022") %>% 
+  hc_add_theme(custom_theme)
+  
 # b. WORDCLOUD
 library(wordcloud)
 library(wordcloud2)
@@ -385,7 +456,6 @@ ggraph(bigram_graph, layout = "fr") +
   geom_node_point() +
   geom_node_text(aes(label = name), vjust = 1, hjust = 1)
 
-
 # pairs or triplets form common short phrases
 # main common center/ topic that are most linked to other topics: 
 # prices, commodity, gas, dollar, market
@@ -399,13 +469,19 @@ ggraph(bigram_graph, layout = "fr") +
   geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
   theme_void()
 
-
 #==============================================================================#
 
-# SECTION IV.  TREASURY YIELDS vs.  WORD FREQ -----------------------------
+# SECTION IV.  TREASURY YIELDS & STOCK PERF vs. WORD FREQ ---------------------
 
 #------------------------------------------------------------------------------#
-# 1. Correlation between "Inflation" word frequency and US Treasury Yields
+us_tyields <- readRDS("treasury_yields.rds")
+# Filter yield dates 
+tyields_subset <- us_tyields %>% 
+  filter(Date >= "2022-05-01")
+summary(tyields_subset$Date)
+
+#------------------------------------------------------------------------------#
+# 1. Correlation between "Recession" word frequency and US Treasury Yields
 # Filter out recession words 
 recession_news <- tidy_news %>% 
   select(created_at, screen_name, word) %>% 
@@ -464,7 +540,7 @@ annotate_figure(plot_yield_inf, top = text_grob("US Treasury Yields vs 'Recessio
 #------------------------------------------------------------------------------#
 # 2. Correlation between "Inflation" word frequency and US Treasury Yields
 # Filter out inflation words 
-inflation_news <- tidy_news %>% 
+inflation_news <- tidy_news2 %>% 
   select(created_at, screen_name, word) %>% 
   filter(word == "inflation")
 str(inflation_news)
@@ -472,16 +548,18 @@ str(inflation_news)
 # Split date-time column into Date and time variables
 inflation_news$Date <- as.Date(inflation_news$created_at) # already got this one from the answers above
 inflation_news$Time <- format(as.POSIXct(inflation_news$created_at), format = "%H:%M:%S")
-View(inflation_news)
+#View(inflation_news)
 
 # Join treasury yields data and inflation data
 tyield_inflation <- inflation_news %>% 
   count(screen_name, Date, sort = TRUE) %>% 
   right_join(tyields_subset, by = "Date") %>% 
   rename("inflation_count" = "n") %>% 
-  filter(!is.na(screen_name))
+  drop_na() %>% 
+  mutate(yield_spread = DGS10 - DGS2)
 View(tyield_inflation)
 str(tyield_inflation)
+#saveRDS(tyield_inflation, "tyields_inflation_freq.rds")
 
 inf_10yr <- ggplot(tyield_inflation, aes(x = inflation_count, y = DGS10)) +
   geom_point(aes(fill = screen_name), color = "black", 
@@ -491,7 +569,7 @@ inf_10yr <- ggplot(tyield_inflation, aes(x = inflation_count, y = DGS10)) +
   stat_regline_equation(label.x = 30, label.y = 3.05) +
   labs(subtitle = "10-year Treasury Yields",
        x = "'Inflation' Count", y = "10Y Yields", fill = "Source") +
-  scale_fill_brewer(palette = "Pastel1") +
+  #scale_fill_brewer(palette = "Pastel1") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         panel.background = element_blank(), 
@@ -507,16 +585,17 @@ inf_2yr <- ggplot(tyield_inflation, aes(x = inflation_count, y = DGS2)) +
   stat_regline_equation(label.x = 30, label.y = 3.25) +
   labs(subtitle = "2-year Treasury Yields",
        x = "'Inflation' Count", y = "2Y Yields", fill = "Source") +
-  scale_fill_brewer(palette = "Pastel1") +
+  #scale_fill_brewer(palette = "Pastel1") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         panel.background = element_blank(),
         plot.subtitle = element_text(hjust = 0.5, size = 11), 
         text = element_text(family = "serif", size = 11))
 
-plot_yield_inf <- ggarrange(inf_2yr, inf_10yr, ncol=2, nrow=1, common.legend = TRUE, legend = "top")
+plot_yield_inf <- ggarrange(inf_2yr, inf_10yr, ncol=2, nrow=1, common.legend = TRUE, legend = NULL)
 plots_yield_inf <- annotate_figure(plot_yield_inf, top = text_grob("US Treasury Yields vs 'Inflation' Frequency in Tweets (May - July 2022)", 
                                                                    color = "black", face = "bold", size = 12.9, family = "serif"))
+plots_yield_inf
 
 # Highchart version
 dgs10_inf_model <- augment(lm(DGS10 ~ inflation_count, data = tyield_inflation))
@@ -524,7 +603,7 @@ dgs2_inf_model <- augment(lm(DGS2 ~ inflation_count, data = tyield_inflation))
 
 inf_10yr_hc <- hchart(tyield_inflation, type = "scatter",
                       hcaes(x = inflation_count, y = DGS10, group = screen_name),
-                      showInLegend = TRUE) %>%
+                      showInLegend = FALSE) %>%
   hc_add_series(dgs10_inf_model, "line", hcaes(x = inflation_count, y = .fitted), showInLegend = FALSE) %>%
   hc_tooltip(pointFormat = "10-year Treasury Yield: {point.y} <br> 'Inflation' Count: {point.x}") %>% 
   hc_title(text = "US Treasury Yields vs 'Inflation' Frequency in Tweets (May - July 2022)") %>% 
@@ -537,7 +616,7 @@ inf_10yr_hc <- hchart(tyield_inflation, type = "scatter",
 
 inf_2yr_hc <- hchart(tyield_inflation, type = "scatter",
                      hcaes(x = inflation_count, y = DGS2, group = screen_name),
-                     showInLegend = TRUE) %>%
+                     showInLegend = FALSE) %>%
   hc_add_series(dgs2_inf_model, "line", hcaes(x = inflation_count, y = .fitted), showInLegend = FALSE) %>%
   hc_tooltip(pointFormat = "2-year Treasury Yield: {point.y} <br> 'Inflation' Count: {point.x}") %>% 
   hc_title(text = "US Treasury Yields vs 'Inflation' Frequency in Tweets (May - July 2022)") %>% 
@@ -553,15 +632,7 @@ hw_grid(inf_2yr_hc, inf_10yr_hc)
 # Correlation matrix
 View(tyield_inflation)
 tyield_inflation_clean <- na.omit(tyield_inflation)
-hchart(cor(tyield_inflation_clean[,-c(1,2)]))
-
-# Time Series: US Treasury Yields Data
-highchart(type = "stock") %>% 
-  hc_add_series(t2yr, type = "line", color = "skyblue", name = "2-year Treasury Yield") %>% 
-  hc_add_series(t10yr, type = "line", color = "pink", name = "10-year Treasury Yield") %>% 
-  hc_title(text = "US Treasury Yields Data") %>% 
-  hc_subtitle(text = "Source: FRED") %>%
-  hc_add_theme(hc_theme_tufte())
+hchart(cor(tyield_inflation[,-c(1,2)]))
 
 # Inflation Word Count By Date
 View(tyield_inflation)
@@ -570,16 +641,87 @@ hchart(tyield_inflation, type = "column",
        showInLegend = TRUE) %>% 
   hc_title(text = "Inflation Word Frequency May-July 2022") %>% 
   hc_subtitle(text = "Source: Twitter") %>%
-  hc_add_theme(hc_theme_ft())
+  hc_add_theme(custom_theme) %>% 
+  hc_credits(enabled = TRUE, text = "@2022 lchi.pham")
 
 # Inflation Count by News Article
-tyield_inflation %>% 
+count_per_media <- tyield_inflation %>% 
   group_by(screen_name) %>% 
-  summarize(inf_count_per_news = sum(inflation_count, na.rm = TRUE)) %>%
+  summarize(inf_count_per_news = sum(inflation_count)) %>%
+  arrange(desc(inf_count_per_news)) %>% 
   hchart(type = 'bar', hcaes(x = screen_name, y = inf_count_per_news, group = screen_name), showInLegend = FALSE) %>% 
-  hc_title(text = "'Inflation' Count by News Article") %>% 
-  hc_subtitle(text = "Source: Twitter") %>%
-  hc_add_theme(hc_theme_ft())
+  hc_xAxis(categories = count_per_media$screen_name) %>% 
+  hc_title(text = "'Inflation' Count by News Outlet") %>% 
+  hc_subtitle(text = "Source: Twitter") %>% 
+  hc_add_theme(custom_theme) %>% 
+  hc_credits(enabled = TRUE, text = "https://lchipham.netlify.app")
+count_per_media
+
+#------------------------------------------------------------------------------#
+# 3. Correlation between "Inflation" word frequency and Yield Spread
+names(tyield_inflation)
+
+# Highchart version
+spread_inf_lm <- augment(lm(yield_spread ~ inflation_count, data = tyield_inflation))
+
+hchart(tyield_inflation, type = "scatter",
+                      hcaes(x = inflation_count, y = yield_spread, group = screen_name),
+                      showInLegend = TRUE) %>%
+  hc_add_series(spread_inf_lm, "line", hcaes(x = inflation_count, y = .fitted), showInLegend = FALSE) %>%
+  hc_tooltip(pointFormat = "Yield Spread: {point.y} <br> 'Inflation' Count: {point.x}") %>% 
+  hc_title(text = "US Treasury Yield Spread vs 'Inflation' Frequency in Tweets") %>% 
+  hc_subtitle(text = "May - July 2022") %>% 
+  hc_yAxis(title = list(text = "Yield Spread"),
+           labels = list(format = "{value}%")) %>%
+  hc_xAxis(title = list(text = "Inflation Word Count")) %>%
+  hc_add_theme(custom_theme) %>% 
+  hc_credits(enabled = TRUE, text = "https://lchipham.netlify.app") 
+
+#------------------------------------------------------------------------------#
+# 3. Correlation between "Inflation" word frequency and Yield Spread
+
+# Join S&P500 historical data into tyield_inflation
+yield_index_inf <- sp500 %>% 
+  select(ref_date, ret_closing_prices, price_adjusted) %>% 
+  right_join(tyield_inflation, by = c("ref_date" = "Date"))
+View(yield_index_inf)
+
+spy_inf_lm <- augment(lm(price_adjusted ~ inflation_count, data = yield_index_inf))
+
+hchart(yield_index_inf, type = "scatter",
+       hcaes(x = inflation_count, y = price_adjusted, group = screen_name),
+       showInLegend = TRUE) %>%
+  hc_add_series(spy_inf_lm, "line", hcaes(x = inflation_count, y = .fitted), showInLegend = FALSE) %>%
+  hc_tooltip(pointFormat = "S&P 500: {point.y} <br> 'Inflation' Count: {point.x}") %>% 
+  hc_title(text = "S&P 500 Adjusted Price vs 'Inflation' Frequency in Tweets") %>% 
+  hc_subtitle(text = "May - July 2022") %>% 
+  hc_yAxis(title = list(text = "S&P 500 Adjusted Price"),
+           labels = list(format = "${value}")) %>%
+  hc_xAxis(title = list(text = "Inflation Word Count")) %>%
+  hc_add_theme(custom_theme) %>% 
+  hc_credits(enabled = TRUE, text = "https://lchipham.netlify.app") 
+
+# Time series
+highchart(type = "stock") %>% 
+  hc_add_series(t10yr, type = "line", color = "pink", name = "10-year Treasury Yield") %>% 
+  hc_add_series(t2yr, type = "line", color = "lavender", name = "2-year Treasury Yield") %>% 
+  hc_title(text = "S&P 500 vs Treasury Yields") %>% 
+  hc_subtitle(text = "Source: Yahoo Finance") %>%
+  hc_add_theme(hc_theme_tufte())
+
+highchart(type = "stock") %>% 
+  hc_add_series(sp500_ts[,8], type = "line", color = "pink", name = "Close Price Return") %>% 
+  hc_add_series(sp500_ts[,7], type = "line", color = "skyblue", name = "Adjusted Price Return") %>% 
+  hc_title(text = "S&P 500 Historical Data") %>% 
+  hc_subtitle(text = "Source: Yahoo Finance") %>%
+  hc_add_theme(hc_theme_tufte())
+
+highchart(type = "stock") %>% 
+  hc_add_series(sp500_ts[,4], type = "area", color = "skyblue", name = "Close Price") %>% 
+  hc_add_series(sp500_ts[,6], type = "area", color = "pink", name = "Adjusted Price") %>% 
+  hc_title(text = "S&P 500 Historical Data") %>% 
+  hc_subtitle(text = "Source: Yahoo Finance") %>%
+  hc_add_theme(hc_theme_tufte())
 
 #==============================================================================#
 
