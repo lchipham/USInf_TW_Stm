@@ -1,0 +1,551 @@
+---
+title: "Inflation Tweets & Market Sentiment"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    theme: 
+      version: 4
+      bg: "white"
+      fg: "black"
+      primary: "pink"
+      navbar-bg: "#EBF9FF"
+      base_font: 
+        google: PT Serif
+      heading_font:
+        google: PT Serif
+    navbar:
+      - { title: "Creator", href: "https://lchipham.netlify.app" }
+    social: [ "menu" ]
+---
+
+```{r setup, include=FALSE}
+# SECTION I: Load Data & Packages ----------------------------------
+# Disable scientific notions
+options(scipen=999)
+
+# Data Wrangling
+library(rtweet)
+library(tidyverse)
+library(tidytext)
+library(dplyr)
+
+# Data Visualization
+library(ggplot2)
+library(ggthemes)
+library(highcharter)
+library(plotly)
+library(shiny)
+library(cowplot)
+library(ggpubr) 
+library(flexdashboard)
+library(wordcloud)
+library(wordcloud2)
+library(reshape2)
+library(igraph)
+library(ggraph)
+
+# Quantitative Finance
+library(quantmod)
+library(qrmdata)
+library(yfR)
+
+# News Article Data
+news2 <- readRDS("news_articles_2.rds")
+
+# Inflation Data
+
+# inflation Data
+
+# SECTION II: DATA PRE-PROCESSING -----------------------------------------
+
+# a. inflation Data
+inflation <- readRDS("inflation_tweets.rds")
+inflation_clean <- inflation %>% 
+  mutate(text = str_replace_all(text, "&#x27;|&quot;|&#x2F;", "'"), ## weird encoding
+         text = str_replace_all(text, "<a(.*?)>", " "),             ## links 
+         text = str_replace_all(text, "&gt;|&lt;|&amp;", " "),      ## html yuck
+         text = str_replace_all(text, "&#[:digit:]+;", " "),        ## html yuck
+         text = str_remove_all(text, "<[^>]*>"),                    ## more html yuck
+         postID = row_number())
+#View(inflation_clean)
+
+# Custom stop words
+custom_stops <- bind_rows(tibble(word = c("inflation", "#inflation", "@potus", "im", "@leadermcconnell", "http", "t.co", "https"),
+                                 lexicon = c("CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM")),
+                          stop_words)
+
+# Transform tweets into "one token per row" format: unnest_tokens()
+tidy_inflation <- inflation_clean %>% 
+  unnest_tokens(word, text, token = "tweets") %>% 
+  anti_join(custom_stops) %>%
+  filter(!str_detect(word, "[0-9]+")) %>%
+  add_count(word)
+
+#------------------------------------------------------------------------------#
+# c. News Article Data
+news2_clean <- news2 %>% 
+  mutate(text = str_replace_all(text, "&#x27;|&quot;|&#x2F;", "'"), ## weird encoding
+         text = str_replace_all(text, "<a(.*?)>", " "),             ## links 
+         text = str_replace_all(text, "&gt;|&lt;|&amp;", " "),      ## html yuck
+         text = str_replace_all(text, "&#[:digit:]+;", " "),        ## html yuck
+         text = str_remove_all(text, "<[^>]*>"),                    ## more html yuck
+         postID = row_number())
+#View(news_clean)
+
+# Custom stop words
+#data("stop_words")
+custom_stops_news <- bind_rows(tibble(word = c("heres","@cnbcmakeit", "writes", "people"),
+                                 lexicon = c("CUSTOM", "CUSTOM", "CUSTOM", "CUSTOM")),
+                          stop_words)
+
+tidy_news2 <- news2_clean %>% 
+  unnest_tokens(word, text, token = "tweets") %>% 
+  anti_join(custom_stops_news) %>%
+  filter(!str_detect(word, "[0-9]+")) %>%
+  add_count(word)
+
+# Rename news articles
+#unique(tidy_news2$screen_name)
+# tidy_news2$screen_name <- as.factor(tidy_news2$screen_name)
+# tidy_news2$screen_name <- recode_factor(tidy_news2$screen_name,
+#                                              "business" = "Bloomberg",
+#                                              "WSJ" = "Wall Street Journal",
+#                                              "FinancialTimes" = "Financial Times",
+#                                              "TheEconomist" = "The Economist",
+#                                              "nytimes" = "New York Times")
+
+# Most common words
+rank_inflation_words <- tidy_inflation %>% 
+  count(word, sort = TRUE)
+#View(rank_inflation_words)
+
+# JOIN NEWS ARTICLE DATA AND YIELDS DATA
+#------------------------------------------------------------------------------#
+us_tyields <- readRDS("treasury_yields.rds")
+# Filter yield dates 
+tyields_subset <- us_tyields %>% 
+  filter(Date >= "2022-05-01")
+summary(tyields_subset$Date)
+
+# Filter out inflation words 
+inflation_news <- tidy_news2 %>% 
+  select(created_at, screen_name, word) %>% 
+  filter(word == "inflation")
+summary(inflation_news$created_at)
+
+# Split date-time column into Date and time variables
+inflation_news$Date <- as.Date(inflation_news$created_at) # already got this one from the answers above
+inflation_news$Time <- format(as.POSIXct(inflation_news$created_at), format = "%H:%M:%S")
+#str(inflation_news)
+
+# Join treasury yields data and inflation data
+tyield_inflation <- inflation_news %>% 
+  count(screen_name, Date, sort = TRUE) %>% 
+  right_join(tyields_subset, by = "Date") %>% 
+  rename("inflation_count" = "n") %>% 
+  filter(!is.na(screen_name))
+#View(tyield_inflation)
+
+#------------------------------------------------------------------------------#
+# CUSTOM PLOT THEME (Logistics)
+make_me_pretty <- function(list) {
+  hc_theme_merge(
+    hc_theme_tufte(),
+    hc_theme(
+      colors = list,
+      chart = list(backgroundColor = "white",
+                   divBackgroundImage = "https://thumbs.gfycat.com/ZestyMedicalAtlanticblackgoby-max-1mb.gif"),
+      title = list(style = list(color = "black", fontFamily = "Exchange", fontWeight = 'bold')),
+      subtitle = list(style = list(color = "black", fontFamily = "Exchange")),
+      legend = list(itemStyle = list(fontFamily = "Exchange", color = "black"),
+                    itemHoverStyle = list(color = "gray"))
+    ))
+}
+
+#Theme of industry graph
+custom_theme <- make_me_pretty(list = c('#fb9a99', '#ffffb3', '#bebada', '#fb8072', '#80b1d3', '#fdb462', '#b3de69', '#fccde5', '#d9d9d9', '#d6604d', '#ccebc5', '#ffed6f','#8dd3c7'))
+
+```
+
+# Tweet Exploration {data-icon="fa-signal"}
+
+## Column 1 {data-width="650" data-height="120"}
+
+### Total Accumulated Tweets 
+
+```{r}
+tweets_count = 200000 #replace with a function here
+valueBox(tweets_count, icon = "fa-twitter")
+```
+
+### 'Inflation' Word Count
+
+```{r}
+inf_freq = 1821
+valueBox(inf_freq, icon = "fa-comments")
+```
+
+### Major News Outlets 
+
+```{r}
+spread = 27
+valueBox(spread, icon = "fa-pencil")
+```
+
+## Column 2 {data-width="350"}
+
+### Bigram Network: Relationships between Pairs of Words
+
+```{r}
+# Relationships between words: N-grams and Correlations
+# token = "ngrams" --> tokenizes by pairs of adjacent words rather than by individual ones
+inflation_bigrams <- inflation_clean %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+# Separate bigrams into individual words
+bigrams_separated <- inflation_bigrams %>% 
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+#Remove stop words from bigrams
+bigrams_filtered <- bigrams_separated %>% 
+  filter(!word1 %in% custom_stops$word) %>% 
+  filter(!word2 %in% custom_stops$word) %>% 
+  filter(!str_detect(word1, "[0-9]+")) %>% 
+  filter(!str_detect(word2, "[0-9]+"))
+
+#new bigram count
+bigram_counts <- bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE)
+#View(bigram_counts)
+
+#Regroup bigrams
+bigram_united <- bigrams_filtered %>% 
+  unite(bigram, word1, word2, sep = " ")
+
+# #tf-idf
+# bigram_tf_idf <- bigram_united %>% 
+#   count(status_id, bigram) %>% 
+#   bind_tf_idf(bigram, status_id, n) %>% 
+#   arrange(desc(tf_idf)) %>% 
+#   top_n(40, tf_idf) #%>% 
+#   #ggplot(aes(reorder(bigram, tf_idf), tf_idf, fill = verified)) +
+#   #geom_col(show.legend = TRUE) +
+#   #facet_wrap(~verified) +
+#   #coord_flip()
+# #bigram_tf_idf
+# View(bigram_tf_idf)
+
+#Visualizing networks of bigrams with ggraph
+bigram_graph <- bigram_counts %>% 
+  filter(n > 20) %>% 
+  graph_from_data_frame()
+V(bigram_graph)$label <- V(bigram_graph)$name
+V(bigram_graph)$color <- "pink"
+
+# pairs or triplets form common short phrases
+# main common center/ topic that are most linked to other topics: 
+# prices, commodity, gas, dollar, market
+
+set.seed(269)
+bigram_graph %>% 
+  hchart(layout = layout_with_fr) %>% 
+  hc_plotOptions(networkgraph = list(
+    keys = c('from', 'to'),
+    layoutAlgorithm = list(enableSimulation =  TRUE)
+  )) 
+
+```
+
+### Most Frequent Words in 'Inflation' Tweets
+
+```{r}
+# Word Cloud
+rank_inflation_words <- tidy_inflation %>% 
+  count(word, sort = TRUE)
+wcloud <- rank_inflation_words %>% 
+  top_n(69) %>% 
+  hchart("wordcloud", hcaes(name = word, weight = n)) %>% 
+  hc_add_theme(custom_theme)
+wcloud
+# Bar Graph
+# bar_common_wrds <- rank_inflation_words %>% 
+#   mutate(word2 = fct_reorder(word, n)) %>%
+#   top_n(15) %>% 
+#   hchart(type = "bar", hcaes(x = word2, y = n), color = "skyblue", borderColor = "black") %>% 
+#   hc_yAxis(title = list(text = "Word Count",
+#                         style = list(color = "black", fontFamily = "Exchange", fontWeight = 'bold')),
+#            labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+#   hc_xAxis(title = list(text = ""),
+#            labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+#   #hc_title(text = "Most Frequent Words in 'Inflation' Tweets") %>% 
+#   #hc_subtitle(text = "July 2022") %>% 
+#   hc_add_theme(custom_theme)
+# 
+# hw_grid(wcloud, bar_common_wrds)
+  
+```
+
+
+## News Articles Tweets {data-height="500"}
+
+### Most Common Words in News Outlet
+'Inflation' ranks as the 12th most frequently mentioned words.
+```{r}
+# TREEMAP (highcharter): Topic Rank (news)
+rank_news_words <- tidy_news2 %>% 
+  count(word, sort = TRUE) %>% 
+  filter(n > 1800)
+#View(rank_news_words)
+
+rank_news_words %>% 
+  hchart('treemap', hcaes(x = 'word', value = 'n', color = 'n')) %>% 
+  hc_colorAxis(stops = color_stops(colors = c("white", "#F1D0D2", "#DD9296", "#CB525A"))) %>% 
+  hc_subtitle(text = "March - July 2022") %>% 
+  hc_add_theme(custom_theme)
+  #hc_title(text = "Most Frequent Words in News Articles Tweets") %>% 
+  #hc_credits(enabled = TRUE, text = "@lchi.pham") %>% 
+  #hc_caption(text = "Source Tweets: WSJ, Financial Times, New York Times, Bloomberg, CNBC, The Economist")
+```
+
+### Share of Inflation Count Per News Outlet
+Yahoo Finance, Market Watch, CNBC and Bloomberg: > 50% 
+```{r}
+# Inflation Count by News Article
+count_per_media <- tyield_inflation %>% 
+  group_by(screen_name) %>% 
+  summarize(inf_count_per_news = sum(inflation_count)) %>%
+  arrange(desc(inf_count_per_news)) %>% 
+  mutate(total_count = sum(inf_count_per_news),
+         inf_share_per_outlet = round(inf_count_per_news / total_count * 100, 2))
+View(count_per_media)
+count_per_media %>% 
+  hchart(type = 'pie', hcaes(x = screen_name, y = inf_share_per_outlet, showInLegend = FALSE)) %>%
+  hc_yAxis(title = list(text = "",
+                        style = list(color = "black", fontFamily = "Exchange", fontWeight = 'bold')),
+           labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+  hc_xAxis(categories = count_per_media$screen_name,
+           title = list(text = ""),
+           labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+  #hc_title(text = "Share of 'Inflation' Count by News Outlet") %>% 
+  hc_tooltip(pointFormat = "{point.y}%") %>%
+  #hc_subtitle(text = "Source: Twitter") %>% 
+  hc_add_theme(custom_theme)
+```
+
+
+## Named Sentiment Groups {data-width="750" data-height="620"}
+
+### Separate Sentiment Groups
+```{r}
+# b. Words that belong to different sentiment categories (nrc sentiments)
+#get_sentiments("nrc")
+word_nrc <- tidy_inflation %>% 
+  inner_join(get_sentiments("nrc")) %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  ungroup() %>% 
+  group_by(sentiment) %>% 
+  ungroup() %>% 
+  mutate(word2 = fct_reorder(word, n),
+         coloract = colorize(sentiment, c("pink", "skyblue", "#ADF7B6", "#FFEE93", "#FFC09F",
+                                          "#B48B7D", "#BFACC8", "#B86F52", "#E3655B", "#9B77BB"))) 
+
+# Word count grouped by specific sentiments
+word_per_sentiment <- word_nrc %>% 
+  count(sentiment, sort = TRUE) %>% 
+  ungroup() %>% 
+  mutate(sentiment = fct_reorder(sentiment, -n))
+#View(word_per_sentiment)
+
+word_per_sent <- word_per_sentiment %>% 
+  hchart("bar", hcaes(x = sentiment, y = n, group = sentiment), showInLegend = FALSE) %>% 
+  hc_title(text = "Word Count Per Sentiment") %>% 
+  hc_yAxis(title = list(text = "",
+                        style = list(color = "black", fontFamily = "Exchange")),
+           labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+  hc_xAxis(title = list(text = ""),
+           labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+  hc_add_theme(custom_theme) 
+
+# 20 words per sentiment category
+word_nrc_6 <- word_nrc %>% 
+  group_by(sentiment) %>%
+  arrange(desc(n)) %>% 
+  slice(1:6)
+#View(word_nrc_6)
+
+# Iterate plotting code over each letter, storing outputs in a list
+nrc_sentiments <- unique(word_nrc_6$sentiment)
+list_of_plots <- map(nrc_sentiments, function(x) {
+  filtered <- word_nrc_6 %>%
+    filter(sentiment == x)
+  filtered %>% 
+    hchart(type = "bar",
+           hcaes(x = word2, y = n, color = coloract),
+           showInLegend = FALSE) %>%
+      hc_title(text = x) %>% 
+      hc_yAxis(title = list(text = "",
+                        style = list(color = "black", fontFamily = "Exchange")),
+               labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+      hc_xAxis(title = list(text = ""),
+               labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+      hc_add_theme(custom_theme)
+  })
+
+# pass final list to hw_grid function
+hw_grid(word_per_sent, list_of_plots, rowheight = 200)
+
+```
+
+
+## Positive/Negative Sentiment {data-width="400" data-height="400"}
+
+### Bing Sentiment 
+Each word is categorized in either positive or negative category.
+```{r}
+#get_sentiments("bing")  
+
+# a. Words that contribute to positive and negative sentiment (bing sentiments)
+word_pos_neg <- tidy_inflation %>% 
+  inner_join(get_sentiments("bing")) %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  ungroup() %>% 
+  group_by(sentiment) %>% 
+  top_n(15) %>% 
+  ungroup() %>% 
+  mutate(word2 = fct_reorder(word, n),
+         coloract = colorize(sentiment, c("pink", "skyblue"))) 
+
+bing <- word_pos_neg %>% 
+  hchart("bar", hcaes(x = word2, y = n, group = sentiment)) %>% 
+  hc_title(text = "Positive & Negative Categories") %>% 
+  hc_yAxis(title = list(text = "Contribution to Sentiment",
+                        style = list(color = "black", fontFamily = "Exchange")),
+           labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+  hc_xAxis(title = list(text = ""),
+           labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+  hc_add_theme(custom_theme) 
+bing
+
+```
+
+### Afinn Sentiment
+Each word is associated with a polarity score between -5 and 5.
+
+```{r}
+# c. Words that belong to positive/negative sentiment rating (afinn sentiments)
+#get_sentiments("afinn")
+afinn <- tidy_inflation %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  mutate(category = ifelse(value < 0, "Negative", "Positive")) %>%
+  count(category, value, word) %>% 
+  top_n(40) %>% 
+  mutate(word2 = fct_reorder(word, value)) %>% 
+  hchart(type = "bar", hcaes(x = word2, y = value, group = category)) %>% 
+  hc_title(text = "Positive & Negative Sentiment Rating") %>% 
+  hc_yAxis(title = list(text = "",
+                        style = list(color = "black", fontFamily = "Exchange")),
+           labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+  hc_xAxis(title = list(text = ""),
+           labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+  hc_add_theme(custom_theme) 
+afinn
+
+```
+
+
+## Topic Modeling {data-width="650" data-height="500"}
+
+### Topic Modeling
+This topic model is an approximation for the abstract topics that occur in tweets about inflation.
+```{r}
+library(textmineR)
+library(topicmodels)
+library(tm)
+library(quanteda)
+library(stm)
+library(furrr)
+
+# Create Document Term Matrix (DTM)
+inflation_bigram_dtm <- bigram_united %>% 
+  count(status_id, bigram, sort = TRUE) %>% 
+  cast_dtm(status_id, bigram, n)
+#View(inflation_bigram_dtm)
+
+# CAST DFM 
+inflation_dfm <- tidy_inflation %>% 
+  count(status_id, word, sort = TRUE) %>% 
+  mutate(line = row_number()) %>% 
+  cast_dfm(status_id, word, n) 
+
+# set a seed so that the output of the model is predictable
+# k = n, to create a n-topic LDA model.
+inflation_bi_lda <- LDA(inflation_bigram_dtm, k = 2, control = list(seed = 269))
+#inflation_bi_lda
+
+# Word-topic probabilities
+
+# Tidy model objects
+#  per-topic-per-word probabilities, called β (“beta”)
+inflation_bi_topics <- tidy(inflation_bi_lda, matrix = "beta")
+#inflation_bi_topics
+
+# Interpretation: the term “aa_bought” has a 1.81e-83 probability of being generated from topic 1
+# slice_max(): find the 10 terms that are most common within each topic
+topic_models_inf <- inflation_bi_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta) %>%
+  mutate(topic = paste0("Topic ", topic),
+         term = reorder_within(term, beta, topic),
+         coloract = colorize(topic, c("pink", "skyblue")))
+View(topic_models_inf)
+
+# Iterate plotting code over each letter, storing outputs in a list
+k_topics <- c("Topic 1", "Topic 2")
+list_models <- map(k_topics, function(x) {
+  filtered <- topic_models_inf %>%
+    filter(topic == x)
+  filtered %>% 
+    hchart(type = "bar",
+           hcaes(x = term, y = beta, color = coloract),
+           showInLegend = FALSE) %>%
+      hc_title(text = x) %>% 
+      hc_yAxis(title = list(text = "",
+                        style = list(color = "black", fontFamily = "Exchange")),
+               labels = list(style = list(color = "black", fontFamily = "Exchange"))) %>% 
+      hc_xAxis(title = list(text = ""),
+               labels = list(style = list(color = "black", fontFamily = "Exchange", fontSize = '12px'))) %>% 
+      hc_add_theme(custom_theme)
+  })
+
+# pass final list to hw_grid function
+hw_grid(list_models, rowheight = 250)
+
+```
+
+
+# Correlations {data-icon="fa-table"}
+
+## Column {data-width="350"}
+
+### Chart A
+
+```{r}
+
+```
+
+## Column {data-icon="fa-table" data-width="350"}
+
+### Chart B
+
+```{r}
+
+```
+
+### Chart C
+
+```{r}
+
+```
